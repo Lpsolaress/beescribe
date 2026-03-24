@@ -167,3 +167,9 @@ $RECYCLE.BIN/
 
 # Local Netlify folder
 .netlify
+
+# Project specific
+*.db
+*.wav
+tmp_audio/
+Back/tmp_audio/
