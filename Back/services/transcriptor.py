@@ -8,7 +8,7 @@ import shutil
 import time
 import traceback
 import gc
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Callable
 
 from openai import OpenAI
 mlx_whisper = None
@@ -174,7 +174,7 @@ class AudioTranscriptor:
         chunk_files = sorted(glob.glob(os.path.join(chunks_dir, "chunk_*.wav")))
         return chunks_dir, chunk_files
 
-    def transcribir_archivo(self, ruta_archivo: str) -> str:
+    def transcribir_archivo(self, ruta_archivo: str, check_cancelled: Optional[Callable] = None) -> str:
         print(f"🔍 Iniciando proceso de transcripción: {ruta_archivo}")
         
         if not os.path.exists(ruta_archivo):
@@ -225,6 +225,10 @@ class AudioTranscriptor:
                     
                     partes = []
                     for idx, chunk_path in enumerate(chunk_files, start=1):
+                        if check_cancelled and check_cancelled():
+                             print(f"🛑 Transcripción OpenAI cancelada en trozo {idx}.")
+                             return ""
+                             
                         print(f"☁️ Enviando trozo {idx}/{len(chunk_files)} a OpenAI...")
                         with open(chunk_path, "rb") as audio_file:
                             chunk_transcript = client.audio.transcriptions.create(
@@ -260,6 +264,10 @@ class AudioTranscriptor:
                 
                 partes = []
                 for idx, chunk_path in enumerate(chunk_files, start=1):
+                    if check_cancelled and check_cancelled():
+                        print(f"🛑 Transcripción local cancelada en trozo {idx}.")
+                        return ""
+
                     print(f"🎙️ Procesando trozo {idx}/{len(chunk_files)}...")
                     
                     if self.device == "mps" and MLX_WHISPER_AVAILABLE:

@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import mermaid from 'mermaid';
 import apiClient from '../api';
 import html2pdf from 'html2pdf.js';
+import AIChatPanel from '../components/AIChatPanel';
 import '../App.css'; // Asegúrate de que tus estilos base están aquí
 
 // --- Componentes de UI (pueden moverse a un archivo de componentes compartidos) ---
@@ -72,7 +73,7 @@ function ResultDetailsPage() {
     setIsSharing(true);
     setShareError(null);
     try {
-      await apiClient.post(`/api/meetings/${meetingId}/share`, { email: shareEmail });
+      await apiClient.post(`/meetings/${meetingId}/share`, { email: shareEmail });
       setShowShareModal(false);
       setShareEmail('');
       alert("¡Reunión compartida con éxito!");
@@ -86,14 +87,39 @@ function ResultDetailsPage() {
   const handleDownloadPdf = () => {
     const element = document.getElementById('pdf-preview-content');
     if (!element) return;
+    
+    // Obtener nombre base de la reunión y tipo de reporte
+    const meetingTitleRequested = meeting?.title || meetingId || 'analisis';
+    const reportType = previewData.title || 'reporte';
+    
+    // Limpiar caracteres especiales para el nombre de archivo
+    const safeTitle = String(meetingTitleRequested).replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const safeReport = String(reportType).replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const filename = `${safeTitle}_${safeReport}.pdf`;
+
     const opt = {
-      margin: 0.5,
-      filename: `analisis_${meeting?.title || meetingId}.pdf`,
+      margin: [0.5, 0.5],
+      filename: filename,
       image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2 },
+      html2canvas: { 
+        scale: 2, 
+        useCORS: true,
+        letterRendering: true
+      },
       jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
     };
-    html2pdf().from(element).set(opt).save();
+
+    const originalStyle = element.style.padding;
+    element.style.padding = '20px';
+    
+    html2pdf().from(element).set(opt).save().then(() => {
+      element.style.padding = originalStyle;
+    });
+  };
+
+  const handleOpenPreview = (title, content, type = 'markdown') => {
+    setPreviewData({ title, content, type });
+    setShowPdfPreview(true);
   };
 
   const handleTransform = async (tipo) => {
@@ -101,7 +127,7 @@ function ResultDetailsPage() {
     setIsTransforming(true);
     setTransformError(null);
     try {
-      const response = await apiClient.post('/api/meetings/transform', {
+      const response = await apiClient.post('/meetings/transform', {
         meeting_id: meetingId,
         tipo_transformacion: tipo
       });
@@ -136,7 +162,7 @@ function ResultDetailsPage() {
       if (!meetingId) return;
       try {
         setIsLoading(true);
-        const response = await apiClient.get(`/api/meetings/${meetingId}`);
+        const response = await apiClient.get(`/meetings/${meetingId}`);
         const data = response.data;
         setMeeting({
           id: data.id,
@@ -260,64 +286,128 @@ function ResultDetailsPage() {
 
                 {transformResult && (
                   <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-6">
-                    <h4 className="text-lg font-bold text-gray-800 mb-3">{transformResult.tipo.charAt(0).toUpperCase() + transformResult.tipo.slice(1)}</h4>
-                    <div className="prose prose-indigo max-w-none">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="text-lg font-bold text-gray-800">{transformResult.tipo.charAt(0).toUpperCase() + transformResult.tipo.slice(1)}</h4>
+                      <button 
+                        onClick={() => handleOpenPreview(transformResult.tipo, transformResult.contenido_md)}
+                        className="flex items-center gap-1.5 text-amber-600 hover:text-amber-700 font-semibold text-xs transition-colors cursor-pointer"
+                      >
+                        <Icon path={ICONS.summary} className="w-4 h-4" /> Vista Previa PDF
+                      </button>
+                    </div>
+                    <div id="transform-content" className="prose prose-indigo max-w-none">
                       <ReactMarkdown components={customComponents}>{transformResult.contenido_md}</ReactMarkdown>
                     </div>
                   </div>
                 )}
                 
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                  <h4 className="text-lg font-bold text-gray-800 mb-3">Resumen General</h4>
-                  <div className="prose prose-indigo max-w-none">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="text-lg font-bold text-gray-800">Resumen General</h4>
+                    <button 
+                      onClick={() => handleOpenPreview('Resumen General', meeting.summary)}
+                      className="flex items-center gap-1.5 text-amber-600 hover:text-amber-700 font-semibold text-xs transition-colors cursor-pointer"
+                    >
+                      <Icon path={ICONS.summary} className="w-4 h-4" /> Vista Previa PDF
+                    </button>
+                  </div>
+                  <div id="general-summary-content" className="prose prose-indigo max-w-none">
                     <ReactMarkdown components={customComponents}>{meeting.summary}</ReactMarkdown>
                   </div>
                 </div>
 
                 {meeting.mindmap && (
                   <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mt-6">
-                    <h4 className="text-lg font-bold text-gray-800 mb-3">Mapa Mental</h4>
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="text-lg font-bold text-gray-800">Mapa Mental</h4>
+                      <button 
+                        onClick={() => handleOpenPreview('Mapa Mental', meeting.mindmap, 'mermaid')}
+                        className="flex items-center gap-1.5 text-amber-600 hover:text-amber-700 font-semibold text-xs transition-colors cursor-pointer"
+                      >
+                        <Icon path={ICONS.mindmap} className="w-4 h-4" /> Vista Previa PDF
+                      </button>
+                    </div>
                     <div className="mermaid-container bg-gray-50 p-4 rounded-xl overflow-auto border border-gray-100">
                       <div id={`mermaid-details-${meeting.id}`} className="mermaid"></div>
                     </div>
                   </div>
                 )}
 
-                {/* Modal de Vista Previa PDF */}
+                {/* Modal de Vista Previa PDF - Rediseñado Estilo Ventana */}
                 {showPdfPreview && (
-                  <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col border border-amber-400 animate-scale-in">
+                  <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 md:p-8">
+                    <div className="bg-[#2a2a2e] rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] overflow-hidden flex flex-col border border-white/10 animate-scale-in">
                       
-                      {/* Cabecera del Modal Estilo Imagen */}
-                      <div className="p-3 bg-amber-50 border-b border-amber-200 flex justify-between items-center text-amber-800">
-                        <div className="flex items-center gap-2 font-bold text-sm tracking-wide">
-                          <Icon path={ICONS.bolt} className="w-4 h-4 text-amber-600" />
-                          <span>RESULTADO: {previewData.title.includes(':') ? previewData.title.split(': ')[1].toUpperCase() : previewData.title.toUpperCase()}</span>
+                      {/* Cabecera Tipo Navegador PDF */}
+                      <div className="p-3 bg-[#323639] border-b border-black/20 flex justify-between items-center text-white select-none">
+                        <div className="flex items-center gap-4">
+                          <div className="flex items-center gap-2 font-medium text-sm truncate max-w-[200px] md:max-w-md">
+                            <Icon path={ICONS.summary} className="w-4 h-4 text-amber-400" />
+                            <span className="truncate">{meeting?.title || 'Sin título'} - {previewData.title}</span>
+                          </div>
+                          <div className="hidden md:flex items-center bg-black/20 rounded px-2 py-0.5 text-xs text-gray-300">
+                            1 / 1
+                          </div>
                         </div>
-                        <div className="flex items-center gap-4 text-xs font-semibold">
-                          <button onClick={handleDownloadPdf} className="flex items-center gap-1 hover:text-amber-600 text-amber-800 cursor-pointer">
-                            <Icon path={ICONS.summary} className="w-3.5 h-3.5" /> Descargar PDF
-                          </button>
-                          <button onClick={() => setShowPdfPreview(false)} className="hover:text-gray-600 text-gray-500 cursor-pointer">
-                            Cerrar
+                        
+                        <div className="flex items-center gap-4">
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => window.location.reload()} className="p-1.5 hover:bg-white/10 rounded transition-colors" title="Actualizar">
+                                <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                            </button>
+                            <button onClick={handleDownloadPdf} className="p-1.5 hover:bg-white/10 rounded transition-colors" title="Descargar PDF">
+                                <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                            </button>
+                            <button className="p-1.5 hover:bg-white/10 rounded transition-colors" title="Imprimir (Próximamente)">
+                                <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
+                            </button>
+                          </div>
+                          
+                          <div className="w-px h-4 bg-white/10 mx-1"></div>
+                          
+                          <button onClick={() => setShowPdfPreview(false)} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="Cerrar">
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                           </button>
                         </div>
                       </div>
                       
-                      <div className="flex-1 p-8 overflow-y-auto bg-white flex justify-center">
-                        <div id="pdf-preview-content" className="bg-white w-full max-w-2xl text-left aspect-auto prose prose-amber">
-                          {/* Eliminamos el título duplicado de la cabecera del preview panel si se desea para que quede idéntico al preview de la imagen */}
-                          <div className="mb-6">
-                            <div className="text-gray-800 text-sm">
-                              {previewData.type === 'mermaid' ? (
-                                <div id="mermaid-preview-container" className="mermaid bg-gray-50 p-4 rounded-md overflow-auto flex justify-center">
-                                  {/* Renderizado dinámico */}
-                                </div>
-                              ) : (
-                                <ReactMarkdown>{previewData.content}</ReactMarkdown>
-                              )}
-                            </div>
+                      {/* Área Principal de Previsualización */}
+                      <div className="flex-1 overflow-y-auto bg-[#525659] p-4 md:p-10 flex flex-col items-center relative">
+                        
+                        {/* Contenido del PDF - Simplificado para coincidir con la UI */}
+                        <div 
+                          id="pdf-preview-content" 
+                          className="bg-white w-full max-w-[800px] shadow-2xl p-8 min-h-[1056px] text-gray-800 animate-slide-up"
+                        >
+                          <div className="mb-8 block">
+                            <h1 className="text-2xl font-bold text-gray-900 mb-2">{previewData.title.toUpperCase()}</h1>
+                            <p className="text-sm text-gray-500">{meeting?.title || 'Sin título'}</p>
+                            <p className="text-xs text-gray-400 mt-1">{new Date().toLocaleDateString()}</p>
+                            <hr className="mt-4 border-gray-100" />
                           </div>
+
+                          <div className="prose prose-sm prose-amber max-w-none leading-relaxed">
+                            {previewData.type === 'mermaid' ? (
+                              <div id="mermaid-preview-container" className="mermaid flex justify-center py-4">
+                                {/* SVG renderizado */}
+                              </div>
+                            ) : (
+                              <ReactMarkdown components={customComponents}>{previewData.content}</ReactMarkdown>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Botones Flotantes Laterales (Estilo Zoom/Acciones) */}
+                        <div className="fixed bottom-20 right-12 flex flex-col gap-3 z-[60]">
+                           <button className="w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center text-gray-600 hover:bg-amber-50 transition-colors border border-gray-100">
+                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" /></svg>
+                           </button>
+                           <button className="w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center text-gray-600 hover:bg-amber-50 transition-colors border border-gray-100">
+                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7" /></svg>
+                           </button>
+                           <button onClick={() => navigate('/')} className="w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center text-gray-600 hover:bg-amber-50 transition-colors border border-gray-100">
+                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+                           </button>
                         </div>
                       </div>
 
@@ -391,6 +481,11 @@ function ResultDetailsPage() {
           </div>
         </div>
       )}
+
+      <AIChatPanel 
+        meetingId={meetingId} 
+        initialMessage={`¡Hola! Estoy listo para ayudarte con los detalles de "${meeting?.title || 'esta reunión'}". ¿Quieres que te explique algún punto o que redacte algo basado en lo hablado? 🐝`}
+      />
     </div>
   );
 }

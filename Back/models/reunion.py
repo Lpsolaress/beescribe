@@ -18,6 +18,11 @@ class Reunion(Base):
     nombre_archivo_original = Column(String)
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     
+    # Nuevos campos para cola y programación
+    status = Column(String, default="PENDING", index=True) # PENDING, PROCESSING, COMPLETED, FAILED, SCHEDULED
+    scheduled_at = Column(DateTime, nullable=True)
+    progress = Column(Integer, default=0) # Porcentaje de progreso (0-100)
+    
     user_id = Column(Integer, ForeignKey("usuarios.id"))
     owner = relationship("Usuario", back_populates="reuniones")
 

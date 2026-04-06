@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import apiClient from '../api';
 import { NewMeetingModal, NotificationsModal } from '../components/HomePageComponents';
+import AIChatPanel from '../components/AIChatPanel';
 import analisisIcon from '../assets/analisis_icon.png';
 
 function CalendarPage() {
@@ -16,6 +17,8 @@ function CalendarPage() {
   const [userProfile, setUserProfile] = useState(null);
   const [isNewMeetingModalOpen, setIsNewMeetingModalOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [selectedForChat, setSelectedForChat] = useState([]);
+  const [openChatWithSelection, setOpenChatWithSelection] = useState(false);
 
   useEffect(() => {
     fetchMeetings();
@@ -34,7 +37,7 @@ function CalendarPage() {
   const fetchMeetings = async () => {
     try {
       setIsLoading(true);
-      const response = await apiClient.get('/api/meetings');
+      const response = await apiClient.get('/meetings');
       setMeetings(response.data);
     } catch (err) {
       setError('No se pudo cargar el historial de reuniones.');
@@ -177,8 +180,10 @@ function CalendarPage() {
           ) : dayMeetings.length > 0 ? (
             <div className="space-y-3">
               {dayMeetings.map(m => (
-                <div key={m.id} onClick={() => navigate(`/results/${m.id}`)} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center cursor-pointer hover:shadow-md transition-shadow">
-                  <div className="flex items-center gap-3">
+                <div key={m.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center cursor-pointer hover:shadow-md transition-shadow"
+                  style={selectedForChat.includes(m.id) ? { borderColor: '#f59e0b', background: '#fffbeb' } : {}}
+                >
+                  <div className="flex items-center gap-3" onClick={() => navigate(`/results/${m.id}`)}>
                     <div className="bg-amber-100 p-2.5 rounded-xl flex items-center justify-center">
                       <svg className="w-5 h-5 text-amber-600 fill-none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                     </div>
@@ -190,7 +195,20 @@ function CalendarPage() {
                       </div>
                     </div>
                   </div>
-                  <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedForChat.includes(m.id)}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        setSelectedForChat(prev =>
+                          prev.includes(m.id) ? prev.filter(x => x !== m.id) : prev.length < 3 ? [...prev, m.id] : prev
+                        );
+                      }}
+                      style={{ accentColor: '#f59e0b', width: 18, height: 18, cursor: 'pointer' }}
+                      title="Seleccionar para analizar"
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -236,6 +254,7 @@ function CalendarPage() {
       <NewMeetingModal 
         isOpen={isNewMeetingModalOpen} 
         onClose={() => setIsNewMeetingModalOpen(false)} 
+        initialDate={selectedDate}
         onSuccess={(newId) => {
           setIsNewMeetingModalOpen(false);
           fetchMeetings(); // Recargar el calendario para ver el puntito
@@ -243,6 +262,25 @@ function CalendarPage() {
         }} 
       />
 
+      {/* Botón flotante para analizar selección */}
+      {selectedForChat.length > 0 && (
+        <button
+          onClick={() => setOpenChatWithSelection(true)}
+          style={{
+            position: 'fixed', bottom: 160, right: 32, zIndex: 9999,
+            background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+            color: 'white', border: 'none', borderRadius: 16,
+            padding: '12px 20px', fontWeight: 700, fontSize: 13,
+            display: 'flex', alignItems: 'center', gap: 8,
+            boxShadow: '0 4px 20px rgba(245,158,11,0.4)',
+            cursor: 'pointer', animation: 'slideUpFade 0.3s ease-out'
+          }}
+        >
+          🐝 Analizar {selectedForChat.length} reunión{selectedForChat.length > 1 ? 'es' : ''} con IA
+        </button>
+      )}
+
+      <AIChatPanel preSelectedIds={openChatWithSelection ? selectedForChat : undefined} autoOpen={openChatWithSelection} onOpened={() => setOpenChatWithSelection(false)} />
     </div>
   );
 }

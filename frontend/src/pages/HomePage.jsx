@@ -12,6 +12,7 @@ import {
   AudioTypeModal,
   NotificationsModal
 } from '../components/HomePageComponents'; // <-- ¡Importamos desde el nuevo archivo!
+import AIChatPanel from '../components/AIChatPanel';
 import analisisIcon from '../assets/analisis_icon.png';
 import '../App.css';
 
@@ -41,6 +42,10 @@ function HomePage() {
   const [showUploadPanel, setShowUploadPanel] = useState(false);
   const [userProfile, setUserProfile] = useState(null);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [selectedForChat, setSelectedForChat] = useState([]);
+  const [openChatWithSelection, setOpenChatWithSelection] = useState(false);
 
   const fetchUserProfile = async () => {
     try {
@@ -68,14 +73,28 @@ function HomePage() {
     }
   }, [location]);
 
+  // Polling automático si hay algo procesándose
+  useEffect(() => {
+    const hasActiveProcessing = history.some(h => h.status === 'PROCESSING' || h.status === 'PENDING');
+    
+    if (hasActiveProcessing) {
+      const interval = setInterval(() => {
+        fetchHistory();
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [history]);
+
   const fetchHistory = async () => {
     try {
       setIsHistoryLoading(true);
-      const response = await apiClient.get('/api/meetings');
+      const response = await apiClient.get('/meetings');
       const formattedHistory = response.data.map(item => ({
         id: item.id,
         title: item.titulo,
         createdAt: item.fecha_creacion,
+        status: item.status,
+        progress: item.progress || 0
       }));
       setHistory(formattedHistory);
     } catch (err) {
@@ -150,22 +169,42 @@ function HomePage() {
 
   const processAudio = async (audioType) => {
     setIsTypeModalOpen(false);
-    setIsLoading(true);
+    setIsLoading(false); // Ya no bloqueamos la pantalla
     setError(null);
     const formData = new FormData();
     formData.append('file', file);
     formData.append('titulo', title);
     formData.append('participantes', participants);
     formData.append('tipo_audio', audioType);
+    if (isScheduled && scheduledAt) {
+      formData.append('scheduled_at', new Date(scheduledAt).toISOString());
+    }
 
     try {
-      const response = await apiClient.post('/api/meetings', formData);
-      await fetchHistory();
-      navigate(`/results/${response.data.id}`);
+      // Mostrar un mensaje temporal o cerrar el panel
+      setShowUploadPanel(false);
+      
+      const response = await apiClient.post('/meetings', formData);
+      const status = response.data.status;
+
+      if (status === "SCHEDULED") {
+        alert("Reunión programada con éxito.");
+      } else {
+        // Recargar el historial para que aparezca la nueva reunión "En cola" o "Procesando"
+        fetchHistory();
+      }
     } catch (err) {
       setError(err.response?.data?.detail || `Error de red: ${err.message}`);
-    } finally {
-      setIsLoading(false);
+    }
+  };
+
+  const handleCancelMeeting = async (meetingId) => {
+    try {
+      await apiClient.delete(`/meetings/${meetingId}`);
+      fetchHistory();
+    } catch (err) {
+      console.error("Error cancelando reunión:", err);
+      setError("No se pudo cancelar la reunión.");
     }
   };
 
@@ -173,7 +212,7 @@ function HomePage() {
     try {
       setIsHistoryLoading(true);
       const activeFilters = Object.fromEntries(Object.entries(filtros).filter(([_, v]) => v != null && v !== ''));
-      const response = await apiClient.post('/api/search', { consulta, filtros: activeFilters });
+      const response = await apiClient.post('/search', { consulta, filtros: activeFilters });
       const formattedHistory = response.data.resultados.map(item => ({
         id: item.id,
         title: item.titulo,
@@ -201,7 +240,7 @@ function HomePage() {
     <div className="min-h-screen bg-gray-50 font-sans text-gray-900 pb-24">
       {isLoading && <LoadingScreen />}
       <div className={isLoading ? 'hidden' : 'block'}>
-        <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={history} onSelect={handleSelectFromHistory} isLoading={isHistoryLoading} onSearch={handleHistorySearch} onResetFilters={fetchHistory} currentUserId={userProfile?.id} />
+        <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={history} onSelect={handleSelectFromHistory} isLoading={isHistoryLoading} onSearch={handleHistorySearch} onResetFilters={fetchHistory} onCancel={handleCancelMeeting} currentUserId={userProfile?.id} />
         <AudioTypeModal isOpen={isTypeModalOpen} onClose={() => setIsTypeModalOpen(false)} onSelectType={processAudio} />
         <NotificationsModal isOpen={isNotificationsOpen} onClose={() => setIsNotificationsOpen(false)} />
 
@@ -277,19 +316,74 @@ function HomePage() {
             </div>
             <div className="space-y-3">
               {history.slice(0, 3).map((item, idx) => (
-                <div key={item.id} onClick={() => handleSelectFromHistory(item.id)} className="flex items-center justify-between p-3.5 bg-white rounded-xl border border-gray-50 shadow-sm cursor-pointer hover:shadow-md transition-shadow">
-                  <div className="flex items-center gap-3">
-                    <span className="p-2 bg-gray-50 rounded-lg text-gray-400">
-                      <Icon path={ICONS.file} className="w-4 h-4" />
-                    </span>
-                    <div>
-                      <h4 className="font-semibold text-sm text-gray-800">{item.title}</h4>
-                      <p className="text-gray-400 text-xxs mt-0.5">
-                        {new Date(item.createdAt).toLocaleDateString()}
-                      </p>
+                <div key={item.id} onClick={() => item.status === 'COMPLETED' && handleSelectFromHistory(item.id)} className={`flex flex-col p-3.5 bg-white rounded-xl border border-gray-50 shadow-sm cursor-pointer hover:shadow-md transition-shadow ${item.status !== 'COMPLETED' ? 'cursor-default opacity-80' : ''}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="p-2 bg-gray-50 rounded-lg text-gray-400">
+                        <Icon path={ICONS.file} className="w-4 h-4" />
+                      </span>
+                      <div>
+                        <h4 className="font-semibold text-sm text-gray-800">{item.title}</h4>
+                        <p className="text-gray-400 text-xxs mt-0.5">
+                          {new Date(item.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
                     </div>
+                    {item.status === 'COMPLETED' ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedForChat.includes(item.id)}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            setSelectedForChat(prev =>
+                              prev.includes(item.id) ? prev.filter(x => x !== item.id) : prev.length < 3 ? [...prev, item.id] : prev
+                            );
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ accentColor: '#f59e0b', width: 18, height: 18, cursor: 'pointer' }}
+                          title="Seleccionar para analizar con IA"
+                        />
+                        <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                      </div>
+                    ) : item.status === 'FAILED' ? (
+                      <span className="text-xxs font-bold text-red-400">Error</span>
+                    ) : item.status === 'CANCELLED' ? (
+                      <span className="text-xxs font-bold text-gray-400">Cancelado</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xxs font-bold text-amber-500 animate-pulse">
+                          {item.status === 'PENDING' ? 'En cola' : 'Procesando...'}
+                        </span>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleCancelMeeting(item.id); }}
+                          className="p-1 hover:bg-red-50 text-gray-300 hover:text-red-500 rounded-full transition-colors"
+                          title="Cancelar"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+
+                  {(item.status === 'PROCESSING' || item.status === 'PENDING') && (
+                    <div className="mt-3">
+                      <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                        <div 
+                          className="bg-amber-400 h-1.5 rounded-full transition-all duration-700 ease-in-out" 
+                          style={{ width: `${item.status === 'PENDING' ? 5 : Math.max(item.progress, 10)}%` }}
+                        ></div>
+                      </div>
+                      <div className="flex justify-between items-center mt-1">
+                        <p className="text-[9px] text-gray-400 font-medium">
+                          {item.status === 'PENDING' ? 'Esperando turno...' : 'Analizando audio y generando resumen...'}
+                        </p>
+                        <p className="text-[10px] text-amber-600 font-bold">
+                          {item.status === 'PENDING' ? '0%' : `${item.progress}%`}
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
               {history.length === 0 && <p className="text-center text-gray-400 text-sm">No hay reuniones recientes</p>}
@@ -324,8 +418,8 @@ function HomePage() {
 
         {/* --- UPLOAD PANEL OVERLAY --- */}
         {showUploadPanel && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end justify-center">
-            <div className="bg-white rounded-t-3xl w-full max-w-md p-6 max-h-[85vh] overflow-y-auto animate-slide-up shadow-2xl">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end justify-center py-10">
+            <div className={`bg-white rounded-t-3xl w-full max-w-md p-6 ${isScheduled ? 'min-h-[60vh]' : ''} max-h-[90vh] overflow-y-auto animate-slide-up shadow-2xl`}>
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold text-gray-800">Nueva Reunión</h3>
                 <button onClick={() => setShowUploadPanel(false)} className="text-gray-400 p-1.5 hover:bg-gray-100 rounded-full">
@@ -362,6 +456,34 @@ function HomePage() {
                     <label className="text-gray-500 text-xxs font-semibold uppercase">Participantes</label>
                     <input type="text" value={participants} onChange={(e) => setParticipants(e.target.value)} placeholder="Ej: Ana, Juan" className="w-full mt-1 p-2.5 bg-gray-50 border border-gray-100 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"/>
                   </div>
+                  
+                  {/* Nueva sección de programación */}
+                  <div className="pt-2 pb-24">
+                    <div className="flex items-center gap-2 mb-2">
+                      <input 
+                        type="checkbox" 
+                        id="schedule-toggle" 
+                        checked={isScheduled} 
+                        onChange={(e) => setIsScheduled(e.target.checked)}
+                        className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500 cursor-pointer"
+                      />
+                      <label htmlFor="schedule-toggle" className="text-gray-700 text-xs font-bold cursor-pointer">
+                        Programar para después
+                      </label>
+                    </div>
+                    
+                    {isScheduled && (
+                      <div className="animate-fade-in">
+                        <label className="text-gray-500 text-xxs font-semibold uppercase">Fecha y Hora</label>
+                        <input 
+                          type="datetime-local" 
+                          value={scheduledAt} 
+                          onChange={(e) => setScheduledAt(e.target.value)}
+                          className="w-full mt-1 p-2.5 bg-gray-50 border border-gray-100 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <button type="submit" disabled={isLoading || isRecording || !file} className="w-full bg-amber-400 text-gray-900 py-3 rounded-xl font-bold text-sm hover:bg-amber-500 disabled:bg-gray-200 disabled:text-gray-400 shadow-md">
@@ -372,8 +494,28 @@ function HomePage() {
           </div>
         )}
 
+        {/* Botón flotante para analizar selección */}
+        {selectedForChat.length > 0 && (
+          <button
+            onClick={() => setOpenChatWithSelection(true)}
+            style={{
+              position: 'fixed', bottom: 160, right: 32, zIndex: 9999,
+              background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+              color: 'white', border: 'none', borderRadius: 16,
+              padding: '12px 20px', fontWeight: 700, fontSize: 13,
+              display: 'flex', alignItems: 'center', gap: 8,
+              boxShadow: '0 4px 20px rgba(245,158,11,0.4)',
+              cursor: 'pointer'
+            }}
+          >
+            🐝 Analizar {selectedForChat.length} reunión{selectedForChat.length > 1 ? 'es' : ''} con IA
+          </button>
+        )}
+
+        <AIChatPanel preSelectedIds={openChatWithSelection ? selectedForChat : undefined} autoOpen={openChatWithSelection} onOpened={() => setOpenChatWithSelection(false)} />
       </div>
     </div>
+
   );
 }
 

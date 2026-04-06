@@ -14,6 +14,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from sqlalchemy import text
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 # Fix for "ssl.SSLError: unknown error (_ssl.c:4293)" common on some Mac Python builds
 try:
@@ -35,6 +37,7 @@ from services.transcriptor import AudioTranscriptor
 from services.resumen import GeneradorResumenAvanzado 
 from services.mapa_mental import GeneradorMapaMental
 from services.buscador import BuscadorReunionesDB
+from services.chat import ChatService
 from services import auth
 from services.temp_files import cleanup_temp_audio_dir, get_temp_audio_dir
 
@@ -109,8 +112,33 @@ def _migrate_meetings_encryption_to_plaintext() -> None:
 
         db.commit()
         print(f"✅ Migración completada: {len(rows)} reuniones pasadas a texto plano.")
+    except Exception as e:
         db.rollback()
         print(f"⚠️ No se pudo migrar cifrado a texto plano: {e}")
+    finally:
+        db.close()
+
+def _reset_stuck_meetings() -> None:
+    """
+    Busca reuniones que quedaron en estado 'PROCESSING' y las vuelve a 'PENDING'.
+    Esto es útil si el servidor se reinició abruptamente mientras procesaba.
+    """
+    db = SessionLocal()
+    try:
+        stuck = db.query(Reunion).filter(Reunion.status == "PROCESSING").all()
+        if not stuck:
+            return
+        
+        for r in stuck:
+            print(f"⚠️ [Startup] Reseteando reunión ID {r.id} de PROCESSING a PENDING (interrumpida).")
+            r.status = "PENDING"
+            r.progress = 0
+        
+        db.commit()
+        print(f"✅ Se resetearon {len(stuck)} reuniones interrumpidas.")
+    except Exception as e:
+        db.rollback()
+        print(f"⚠️ Error al resetear reuniones stuck: {e}")
     finally:
         db.close()
 
@@ -121,13 +149,52 @@ async def _startup_tasks():
     ttl_seconds = max(60, ttl_minutes * 60)
     get_temp_audio_dir()
     _migrate_meetings_encryption_to_plaintext()
+    _reset_stuck_meetings()
 
-    async def _loop():
+    async def _cleanup_loop():
         while True:
             cleanup_temp_audio_dir(ttl_seconds=ttl_seconds)
             await asyncio.sleep(max(30, interval_seconds))
 
-    asyncio.create_task(_loop())
+    async def _queue_worker():
+        """
+        Worker que procesa la cola de reuniones de forma secuencial y por horario.
+        """
+        print("🐝 Worker de cola de reuniones iniciado.")
+        while True:
+            db = SessionLocal()
+            try:
+                # 1. Buscar reuniones pendientes o programadas que ya deben ejecutarse
+                now = datetime.utcnow()
+                
+                # Obtener todos los usuarios que tienen algo pendiente
+                # (Procesamos secuencialmente por usuario)
+                pendientes = db.query(Reunion).filter(
+                    (Reunion.status == "PENDING") | 
+                    ((Reunion.status == "SCHEDULED") & (Reunion.scheduled_at <= now))
+                ).order_by(Reunion.fecha_creacion.asc()).all()
+
+                for r in pendientes:
+                    # Verificar si el usuario ya tiene algo en PROCESSING
+                    busy = db.query(Reunion).filter(
+                        Reunion.user_id == r.user_id,
+                        Reunion.status == "PROCESSING"
+                    ).first()
+
+                    if not busy:
+                        print(f"🚀 [Worker] Iniciando procesamiento para ID {r.id} (User {r.user_id})")
+                        # Lanzamos en un hilo aparte para no bloquear el worker
+                        loop = asyncio.get_event_loop()
+                        loop.run_in_executor(None, process_audio_background, r.id)
+            except Exception as e:
+                print(f"❌ [Worker] Error: {e}")
+            finally:
+                db.close()
+            
+            await asyncio.sleep(10) # Revisar cada 10 segundos
+
+    asyncio.create_task(_cleanup_loop())
+    asyncio.create_task(_queue_worker())
 
 # --- ESQUEMAS PYDANTIC ---
 
@@ -146,6 +213,9 @@ class UserResponse(BaseModel):
     foto_perfil: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
+class GoogleAuthRequest(BaseModel):
+    credential: str
+
 class SearchRequest(BaseModel):
     consulta: Optional[str] = ""
     filtros: Optional[Dict] = None
@@ -154,15 +224,24 @@ class SearchRequest(BaseModel):
 class MeetingResponse(BaseModel):
     id: int
     titulo: Optional[str] = "Sin título"
+    transcripcion: Optional[str] = ""
     resumen_md: Optional[str] = ""
     mapa_mermaid: Optional[str] = ""
     fecha_creacion: datetime
     user_id: Optional[int] = None
+    status: str = "PENDING"
+    scheduled_at: Optional[datetime] = None
+    progress: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 
 class ShareRequest(BaseModel):
     email: str
+
+class ChatRequest(BaseModel):
+    query: str
+    meeting_id: Optional[int] = None
+    meeting_ids: Optional[List[int]] = None  # Para análisis multi-reunión (máx 5)
 
 # --- SERVICIOS ---
 
@@ -178,12 +257,13 @@ transcriptor = AudioTranscriptor()
 generador_resumen = GeneradorResumenAvanzado(api_key)
 generador_mapa = GeneradorMapaMental(api_key)
 buscador = BuscadorReunionesDB()
+chat_service = ChatService(api_key)
 
 class TransformRequest(BaseModel):
     meeting_id: int
     tipo_transformacion: str = Field(..., description="Tipo de transformación: breve, detallado, cuestionario, guion")
 
-@app.post("/api/meetings/transform", tags=["Meetings"])
+@app.post("/meetings/transform", tags=["Meetings"])
 async def transform_meeting(
     request: TransformRequest,
     db: Session = Depends(get_db),
@@ -258,6 +338,37 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = auth.create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
+@app.post("/auth/google", response_model=Token, tags=["Auth"])
+async def google_auth(request: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """
+    Recibe el 'credential' (ID Token) de Google, lo verifica y emite un JWT local.
+    """
+    try:
+        # ID token is valid. Get user's Google ID and email.
+        idinfo = id_token.verify_oauth2_token(
+            request.credential, 
+            google_requests.Request(), 
+            os.getenv("GOOGLE_CLIENT_ID")
+        )
+        email = idinfo['email']
+        
+        # 1. Buscar o crear el usuario
+        user = auth.get_user(db, email=email)
+        if not user:
+            # Crear nuevo usuario si no existe
+            user = Usuario(email=email, hashed_password="GOOGLE_AUTH_USER") # Sin password para usuarios de Google
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        
+        # 2. Generar el JWT local para Bee-Scribe
+        access_token = auth.create_access_token(data={"sub": user.email})
+        return {"access_token": access_token, "token_type": "bearer"}
+
+    except ValueError:
+        # Invalid token
+        raise HTTPException(status_code=401, detail="Token de Google inválido")
+
 @app.get("/users/me", response_model=UserResponse, tags=["Auth"])
 async def read_users_me(current_user: Usuario = Depends(auth.get_current_user)):
     return current_user
@@ -285,44 +396,101 @@ async def update_user_profile(
     db.refresh(current_user)
     return {"message": "Perfil actualizado", "alias": current_user.alias, "foto_perfil": current_user.foto_perfil}
 
-# --- ENDPOINTdef process_audio_background(reunion_id: int, temp_file_path: str, titulo: str, participantes: str, tipo_audio: str):
+# --- ENDPOINTS ---
+
+def process_audio_background(reunion_id: int):
     """
     Tarea en segundo plano para procesar audio pesado sin bloquear la respuesta HTTP.
+    Ahora obtiene los datos de la DB y actualiza el estado.
     """
     from core.database import SessionLocal
-    from core.security import encrypt_str
+    from core.crypto import encrypt_str
     
-    print(f"🎙️ [Background] Iniciando procesamiento para reunión ID: {reunion_id}")
     db = SessionLocal()
     try:
-        if not os.path.exists(temp_file_path):
-             raise Exception("El archivo temporal no existe en el worker.")
+        reunion = db.query(Reunion).filter(Reunion.id == reunion_id).first()
+        if not reunion:
+            print(f"❌ [Background] Reunión {reunion_id} no encontrada.")
+            return
+
+        print(f"🎙️ [Background] Iniciando procesamiento para reunión ID: {reunion_id}")
+        reunion.status = "PROCESSING"
+        db.commit()
+
+        # Obtener parámetros de metadatos
+        meta = reunion.metadatos or {}
+        temp_file_path = meta.get("temp_file_path")
+        titulo = reunion.titulo
+        participantes = meta.get("participantes", "")
+        tipo_audio = meta.get("tipo_audio", "audio_normal")
+
+        if not temp_file_path or not os.path.exists(temp_file_path):
+             raise Exception(f"El archivo temporal no existe: {temp_file_path}")
 
         # 1. Transcripción
-        texto_transcrito = transcriptor.transcribir_archivo(temp_file_path)
+        reunion.progress = 10
+        db.commit()
+        
+        def check_if_cancelled():
+            # Creamos una sesión breve para verificar el estado actual en DB
+            inner_db = SessionLocal()
+            try:
+                r = inner_db.query(Reunion).filter(Reunion.id == reunion_id).first()
+                return r.status == "CANCELLED" if r else False
+            finally:
+                inner_db.close()
+
+        texto_transcrito = transcriptor.transcribir_archivo(temp_file_path, check_cancelled=check_if_cancelled)
+        
+        # Verificar si se canceló durante la transcripción
+        if not texto_transcrito and check_if_cancelled():
+            print(f"🛑 [Background] Reunión {reunion_id} cancelada durante el proceso de transcripción.")
+            return
+
         print(f"✅ [Background] Transcripción completada: {len(texto_transcrito)} caracteres.")
         
+        # Verificar cancelación después de transcripción
+        db.refresh(reunion)
+        if reunion.status == "CANCELLED":
+            print(f"🛑 [Background] Reunión {reunion_id} cancelada tras transcripción.")
+            return
+
         if not texto_transcrito or not texto_transcrito.strip():
              raise Exception("La transcripción no produjo ningún texto.")
 
+        reunion.progress = 60
+        db.commit()
+
         # 2. Generar Resumen y Mapa Mental
         lista_participantes = [p.strip() for p in participantes.split(',') if p.strip()]
-        resumen_md, metadatos = generador_resumen.generar_resumen_completo(texto_transcrito, titulo, lista_participantes, tipo_audio)
+        resumen_md, metadatos_ia = generador_resumen.generar_resumen_completo(texto_transcrito, titulo, lista_participantes, tipo_audio)
+        
+        # Verificar cancelación antes del mapa mental
+        db.refresh(reunion)
+        if reunion.status == "CANCELLED":
+            print(f"🛑 [Background] Reunión {reunion_id} cancelada antes del mapa mental.")
+            return
+
+        reunion.progress = 85
+        db.commit()
+        
         mapa_mermaid = generador_mapa.generar_mapa_mental(texto_transcrito)
         
+        # Verificar cancelación final
+        db.refresh(reunion)
+        if reunion.status == "CANCELLED":
+            print(f"🛑 [Background] Reunión {reunion_id} cancelada al final.")
+            return
+
         # 3. Guardar / Cifrar
-        t_transcripcion = encrypt_str(texto_transcrito)
-        t_resumen = encrypt_str(resumen_md)
-        t_mapa = encrypt_str(mapa_mermaid)
-        
-        reunion = db.query(Reunion).filter(Reunion.id == reunion_id).first()
-        if reunion:
-            reunion.transcripcion = t_transcripcion
-            reunion.resumen_md = t_resumen
-            reunion.mapa_mermaid = t_mapa
-            reunion.metadatos = metadatos
-            db.commit()
-            print(f"✅ [Background] Reunión {reunion_id} guardada con éxito.")
+        reunion.transcripcion = encrypt_str(texto_transcrito)
+        reunion.resumen_md = encrypt_str(resumen_md)
+        reunion.mapa_mermaid = encrypt_str(mapa_mermaid)
+        reunion.metadatos = {**meta, "ia_metadatos": metadatos_ia}
+        reunion.status = "COMPLETED"
+        reunion.progress = 100
+        db.commit()
+        print(f"✅ [Background] Reunión {reunion_id} guardada con éxito.")
             
     except Exception as e:
         import traceback
@@ -331,32 +499,45 @@ async def update_user_profile(
         reunion = db.query(Reunion).filter(Reunion.id == reunion_id).first()
         if reunion:
             reunion.transcripcion = encrypt_str(f"[FALLIDO: {str(e)}]")
+            reunion.status = "FAILED"
             db.commit()
     finally:
-        db.close()
-        # Limpieza de archivo temporal
+        # Limpieza de archivo temporal (ya lo hacía antes, mantenemos la lógica)
+        meta = reunion.metadatos if reunion else {}
+        temp_file_path = meta.get("temp_file_path") if meta else None
         if temp_file_path and os.path.exists(temp_file_path):
              try:
                  os.unlink(temp_file_path)
                  print(f"🧹 [Background] Limpieza exitosa: {temp_file_path}")
              except Exception as e:
                  print(f"⚠️ [Background] Error al limpiar temp: {e}")
+        db.close()
 
 
-@app.post("/api/meetings", tags=["Meetings"])
+@app.post("/meetings", tags=["Meetings"])
 async def process_meeting_and_save(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     titulo: str = Form(""),
     participantes: str = Form(""),
     tipo_audio: str = Form(...),
+    scheduled_at: Optional[str] = Form(None), # Recibimos como string ISO
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(auth.get_current_user)
 ):
     temp_file_path = ""
-    from core.security import encrypt_str
+    from core.crypto import encrypt_str
+    from datetime import datetime
     try:
-        print(f"DEBUG: Receiving file {file.filename}, content_type={file.content_type}")
+        print(f"DEBUG: Receiving file {file.filename}, content_type={file.content_type}, scheduled_at={scheduled_at}")
+
+        # Parsear fecha de programación si existe
+        scheduled_dt = None
+        if scheduled_at:
+            try:
+                scheduled_dt = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
+            except Exception as e:
+                print(f"⚠️ Error parseando scheduled_at: {e}")
 
         tmp_dir = get_temp_audio_dir()
         extension = os.path.splitext(file.filename or '.tmp')[1]
@@ -373,21 +554,34 @@ async def process_meeting_and_save(
         # 1. Crear fila en Base de Datos INMEDIATAMENTE
         nueva_reunion = Reunion(
             titulo=titulo if titulo else file.filename,
-            transcripcion=encrypt_str("[Procesando...]"),
-            resumen_md=encrypt_str("[Generando análisis...]"),
-            mapa_mermaid=encrypt_str("graph TD\n    A[Procesando]"),
+            transcripcion=encrypt_str("[En cola...]" if scheduled_dt else "[Procesando...]"),
+            resumen_md=encrypt_str("[Esperando procesamiento...]"),
+            mapa_mermaid=encrypt_str("graph TD\n    A[En cola...]"),
             nombre_archivo_original=file.filename,
-            user_id=current_user.id
+            user_id=current_user.id,
+            status="SCHEDULED" if scheduled_dt else "PENDING",
+            scheduled_at=scheduled_dt
         )
         db.add(nueva_reunion)
         db.commit()
         db.refresh(nueva_reunion)
 
-        # 2. Encolar procesamiento en segundo plano
-        background_tasks.add_task(process_audio_background, nueva_reunion.id, temp_file_path, titulo, participantes, tipo_audio)
+        # 2. Encolar procesamiento (el worker se encargará si es programada o secuencial)
+        # background_tasks.add_task(process_audio_background, nueva_reunion.id, temp_file_path, titulo, participantes, tipo_audio)
+        # YA NO USAMOS BackgroundTasks directamente aquí, el worker lo hará.
+        # Pero necesitamos guardar la ruta del archivo temporal para el worker.
+        # Podríamos guardar el tipo_audio y participantes en los metadatos o una tabla de tareas.
+        
+        # Para simplificar, guardamos los parámetros necesarios en metadatos para el worker
+        nueva_reunion.metadatos = {
+            "temp_file_path": temp_file_path,
+            "tipo_audio": tipo_audio,
+            "participantes": participantes
+        }
+        db.commit()
 
-        print(f"🚀 [FastAPI] Encolado en background para ID {nueva_reunion.id}")
-        return {"success": True, "id": nueva_reunion.id}
+        print(f"🚀 [FastAPI] Reunión {nueva_reunion.id} guardada con estado {nueva_reunion.status}")
+        return {"success": True, "id": nueva_reunion.id, "status": nueva_reunion.status}
 
     except Exception as e:
         if temp_file_path and os.path.exists(temp_file_path):
@@ -396,8 +590,36 @@ async def process_meeting_and_save(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- ENDPOINT: LISTA LIGERA DE REUNIONES PARA SELECTOR ---
+@app.get("/meetings/summary-list", tags=["Meetings"])
+async def get_meetings_summary_list(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(auth.get_current_user)
+):
+    """Devuelve una lista ligera de reuniones (id, título, fecha, duración estimada) para el selector del chat."""
+    reuniones = db.query(Reunion).filter(
+        Reunion.user_id == current_user.id,
+        Reunion.status == "COMPLETED"
+    ).order_by(Reunion.fecha_creacion.desc()).all()
+    
+    results = []
+    for r in reuniones:
+        # Estimar duración: ~150 palabras/min hablando, ~5 chars/palabra = ~750 chars/min
+        trans_len = len(r.transcripcion or "") if r.transcripcion else 0
+        estimated_minutes = max(5, round(trans_len / 750))  # Mínimo 5 min
+        
+        results.append({
+            "id": r.id,
+            "titulo": r.titulo,
+            "fecha": r.fecha_creacion.isoformat() if r.fecha_creacion else None,
+            "duracion_min": estimated_minutes
+        })
+    
+    return results
+
+
 # --- ESTE ES EL ENDPOINT QUE FALTABA ---
-@app.get("/api/meetings/{meeting_id}", response_model=MeetingResponse, tags=["Meetings"])
+@app.get("/meetings/{meeting_id}", response_model=MeetingResponse, tags=["Meetings"])
 async def get_meeting_by_id(
     meeting_id: int, 
     db: Session = Depends(get_db), 
@@ -423,7 +645,7 @@ async def get_meeting_by_id(
 # ----------------------------------------
 
 
-@app.post("/api/meetings/{meeting_id}/share", tags=["Meetings"])
+@app.post("/meetings/{meeting_id}/share", tags=["Meetings"])
 async def share_meeting(
     meeting_id: int, 
     request: ShareRequest, 
@@ -453,7 +675,37 @@ async def share_meeting(
     return {"message": f"Reunión compartida con éxito con {request.email}"}
 
 
-@app.get("/api/meetings", response_model=List[MeetingResponse], tags=["Meetings"])
+@app.delete("/meetings/{meeting_id}", tags=["Meetings"])
+async def delete_meeting(
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(auth.get_current_user)
+):
+    """
+    Elimina o cancela una reunión. 
+    Si está en PENDING o SCHEDULED, se borra. 
+    Si está en PROCESSING, se marca como CANCELLED para que el worker se detenga.
+    """
+    meeting = db.query(Reunion).filter(
+        Reunion.id == meeting_id,
+        Reunion.user_id == current_user.id
+    ).first()
+
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Reunión no encontrada")
+
+    if meeting.status == "PROCESSING":
+        # No podemos matar el thread fácilmente, así que marcamos como cancelado
+        meeting.status = "CANCELLED"
+        db.commit()
+        return {"message": "Reunión marcada para cancelación"}
+    else:
+        # PENDING, SCHEDULED, COMPLETED, FAILED, CANCELLED
+        db.delete(meeting)
+        db.commit()
+        return {"message": "Reunión eliminada correctamente"}
+
+@app.get("/meetings", response_model=List[MeetingResponse], tags=["Meetings"])
 async def get_user_meetings(db: Session = Depends(get_db), current_user: Usuario = Depends(auth.get_current_user)):
     """
     Obtiene todas las reuniones para el usuario autenticado (propias y compartidas).
@@ -483,7 +735,7 @@ async def get_user_meetings(db: Session = Depends(get_db), current_user: Usuario
     return reuniones
 
 
-@app.get("/api/meetings/{meeting_id}/export", tags=["Meetings"])
+@app.get("/meetings/{meeting_id}/export", tags=["Meetings"])
 async def export_meeting_document(
     meeting_id: int,
     documento: str = "resumen",
@@ -529,7 +781,7 @@ async def export_meeting_document(
 
 
 # --- ENDPOINT DE BÚSQUEDA ---
-@app.post("/api/search", tags=["Search"])
+@app.post("/search", tags=["Search"])
 async def search_meetings(
     request: SearchRequest,
     db: Session = Depends(get_db),
@@ -545,3 +797,26 @@ async def search_meetings(
         return {"success": True, "resultados": resultados}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en la búsqueda: {str(e)}")
+
+
+# --- ENDPOINT DE CHAT IA ---
+@app.post("/chat", tags=["Chat"])
+async def chat_ai(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(auth.get_current_user)
+):
+    try:
+        # Consolidar meeting_ids: priorizar meeting_ids, luego meeting_id individual
+        ids = request.meeting_ids or ([request.meeting_id] if request.meeting_id else None)
+        respuesta = chat_service.chat_with_context(
+            db=db,
+            user_id=current_user.id,
+            query=request.query,
+            meeting_ids=ids
+        )
+        return {"success": True, "respuesta": respuesta}
+    except Exception as e:
+        print(f"❌ Error en endpoint de chat: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en el chat de IA: {str(e)}")
+

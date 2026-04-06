@@ -56,7 +56,7 @@ const HistoryFilters = ({ onFilterChange, onReset }) => {
   );
 };
 
-export const HistoryModal = ({ isOpen, onClose, history, onSelect, selectedId, isLoading, onSearch, onResetFilters, currentUserId }) => {
+export const HistoryModal = ({ isOpen, onClose, history, onSelect, selectedId, isLoading, onSearch, onResetFilters, onCancel, currentUserId }) => {
   const [showFilters, setShowFilters] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentTab, setCurrentTab] = useState('mias');
@@ -111,9 +111,42 @@ export const HistoryModal = ({ isOpen, onClose, history, onSelect, selectedId, i
           ) : filteredHistory.length > 0 ? (
             <div className="space-y-4">
               {filteredHistory.map(item => (
-                <div key={item.id} onClick={() => onSelect(item.id)} className={`py-3 cursor-pointer border-b border-gray-100 flex flex-col transition-colors ${selectedId === item.id ? 'bg-amber-50/50 rounded-xl px-2' : 'hover:bg-gray-50/50'}`}>
-                  <strong className="text-base font-bold text-gray-800">{item.title || "Análisis sin título"}</strong>
-                  <span className="text-xs text-gray-400 mt-1">{new Date(item.createdAt).toLocaleString()}</span>
+                <div key={item.id} onClick={() => item.status === 'COMPLETED' && onSelect(item.id)} className={`py-3 border-b border-gray-100 flex flex-col transition-colors ${selectedId === item.id ? 'bg-amber-50/50 rounded-xl px-2' : 'hover:bg-gray-50/50'} ${item.status !== 'COMPLETED' ? 'cursor-default opacity-80' : 'cursor-pointer'}`}>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <strong className="text-base font-bold text-gray-800">{item.title || "Análisis sin título"}</strong>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-gray-400">{new Date(item.createdAt).toLocaleString()}</span>
+                        {item.status !== 'COMPLETED' && (
+                          <span className={`text-[10px] font-bold uppercase tracking-wider ${item.status === 'FAILED' ? 'text-red-400' : item.status === 'CANCELLED' ? 'text-gray-400' : 'text-amber-500 animate-pulse'}`}>
+                            {item.status === 'PENDING' ? 'En cola' : item.status === 'FAILED' ? 'Error' : item.status === 'CANCELLED' ? 'Cancelado' : 'Procesando'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {item.status === 'COMPLETED' ? (
+                      <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                    ) : (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); onCancel && onCancel(item.id); }}
+                        className="p-1.5 hover:bg-red-50 text-gray-300 hover:text-red-500 rounded-full transition-colors"
+                        title="Cancelar"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+                    )}
+                  </div>
+                  
+                  {(item.status === 'PROCESSING' || item.status === 'PENDING') && (
+                    <div className="mt-2 w-full pr-4">
+                      <div className="w-full bg-gray-100 rounded-full h-1">
+                        <div 
+                          className="bg-amber-400 h-1 rounded-full transition-all duration-500" 
+                          style={{ width: `${item.status === 'PENDING' ? 5 : item.progress}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -150,7 +183,7 @@ export const AudioTypeModal = ({ isOpen, onClose, onSelectType }) => {
   );
 };
 
-export const NewMeetingModal = ({ isOpen, onClose, onSuccess }) => {
+export const NewMeetingModal = ({ isOpen, onClose, onSuccess, initialDate }) => {
   const [step, setStep] = useState(1); // 1: Detalles, 2: Tipo de Audio
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState('');
@@ -159,6 +192,24 @@ export const NewMeetingModal = ({ isOpen, onClose, onSuccess }) => {
   const [audioPreviewUrl, setAudioPreviewUrl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Estados para programación
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState('');
+
+  // Efecto para sincronizar con la fecha seleccionada en el calendario
+  useEffect(() => {
+    if (isOpen && initialDate) {
+      setIsScheduled(true);
+      const d = new Date(initialDate);
+      const now = new Date();
+      d.setHours(now.getHours() + 1, 0, 0, 0); // Default a la siguiente hora
+      setScheduledAt(d.toISOString().slice(0, 16));
+    } else if (isOpen) {
+      setIsScheduled(false);
+      setScheduledAt('');
+    }
+  }, [isOpen, initialDate]);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -219,9 +270,12 @@ export const NewMeetingModal = ({ isOpen, onClose, onSuccess }) => {
     formData.append('titulo', title || "Reunión sin título");
     formData.append('participantes', participants);
     formData.append('tipo_audio', selectedType); 
+    if (isScheduled && scheduledAt) {
+      formData.append('scheduled_at', new Date(scheduledAt).toISOString());
+    }
 
     try {
-      const response = await apiClient.post('/api/meetings', formData);
+      const response = await apiClient.post('/meetings', formData);
       if (onSuccess) onSuccess(response.data.id);
     } catch (err) {
       console.error("DEBUG Error handleSubmit:", err);
@@ -279,14 +333,44 @@ export const NewMeetingModal = ({ isOpen, onClose, onSuccess }) => {
             {/* Inputs */}
             <div className="space-y-4 mb-6">
               <div>
-                <label className="block text-xxs font-extrabold text-gray-400 mb-1">TÍTULO</label>
-                <input type="text" placeholder="Título de la reunión" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full bg-gray-50/50 border border-gray-100 rounded-xl p-3 text-xs focus:outline-none focus:border-amber-400 placeholder-gray-300" />
+                <label className="block text-xxs font-extrabold text-gray-400 mb-1 uppercase tracking-wider">Título de la Reunión</label>
+                <input type="text" placeholder="Ej: Sesión de Estrategia" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full bg-gray-50/50 border border-gray-100 rounded-xl p-3 text-xs font-bold focus:outline-none focus:border-amber-400 placeholder-gray-300" />
               </div>
               <div>
-                <label className="block text-xxs font-extrabold text-gray-400 mb-1">PARTICIPANTES</label>
-                <input type="text" placeholder="Ej: Ana, Juan" value={participants} onChange={(e) => setParticipants(e.target.value)} className="w-full bg-gray-50/50 border border-gray-100 rounded-xl p-3 text-xs focus:outline-none focus:border-amber-400 placeholder-gray-300" />
+                <label className="block text-xxs font-extrabold text-gray-400 mb-1 uppercase tracking-wider">Participantes</label>
+                <input type="text" placeholder="Ej: Ana, Juan" value={participants} onChange={(e) => setParticipants(e.target.value)} className="w-full bg-gray-50/50 border border-gray-100 rounded-xl p-3 text-xs font-bold focus:outline-none focus:border-amber-400 placeholder-gray-300" />
               </div>
             </div>
+            
+            {/* Programar para después */}
+            <div className="flex items-center gap-3 mb-5 p-3.5 bg-gray-50 rounded-2xl border border-gray-100/50 w-full hover:bg-gray-100 transition-colors">
+              <div className="flex items-center h-5">
+                <input
+                  id="scheduled-checkbox-modal"
+                  type="checkbox"
+                  checked={isScheduled}
+                  onChange={(e) => setIsScheduled(e.target.checked)}
+                  className="w-5 h-5 text-amber-500 border-gray-300 rounded-lg focus:ring-amber-500 focus:ring-offset-0 cursor-pointer accent-amber-500"
+                />
+              </div>
+              <div className="ml-1 text-sm text-left">
+                <label htmlFor="scheduled-checkbox-modal" className="font-extrabold text-gray-700 cursor-pointer text-[11px] uppercase tracking-tight">Programar para después</label>
+                <p className="text-gray-400 text-[10px]">Sube el audio ahora y Bee-Scribe lo procesará luego.</p>
+              </div>
+            </div>
+
+            {isScheduled && (
+              <div className="mb-5 animate-fade-in w-full text-left p-1">
+                <label className="block text-[10px] font-extrabold text-gray-400 mb-1.5 uppercase tracking-widest ml-1">Fecha y Hora de Proceso</label>
+                <input
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                  className="block w-full px-4 py-3 bg-white border border-gray-100 rounded-xl text-xs font-bold focus:ring-2 focus:ring-amber-500/10 focus:border-amber-400 transition-all cursor-pointer"
+                  min={new Date().toISOString().slice(0, 16)}
+                />
+              </div>
+            )}
 
             {error && <p className="text-xxs text-red-500 mb-2">{error}</p>}
 
@@ -324,6 +408,29 @@ export const LoadingScreen = () => (
   </div>
 );
 export const NotificationsModal = ({ isOpen, onClose }) => {
+  const [scheduledMeetings, setScheduledMeetings] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchScheduled();
+    }
+  }, [isOpen]);
+
+  const fetchScheduled = async () => {
+    try {
+      setIsLoading(true);
+      const response = await apiClient.get('/meetings');
+      // Filtrar por estado SCHEDULED
+      const scheduled = response.data.filter(m => m.status === 'SCHEDULED');
+      setScheduledMeetings(scheduled);
+    } catch (err) {
+      console.error("Error fetching scheduled meetings:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -341,9 +448,21 @@ export const NotificationsModal = ({ isOpen, onClose }) => {
         <div className="space-y-4">
           <div>
             <h4 className="text-xxs font-extrabold text-gray-500 tracking-wider mb-2">PRÓXIMAS PROGRAMADAS</h4>
-            <div className="bg-gray-50 rounded-2xl p-3 border border-gray-100 flex flex-col gap-1">
-              <h5 className="text-xs font-bold text-gray-800">mañanera</h5>
-              <span className="text-xxs text-gray-400">11/3/2026, 9:00:00</span>
+            <div className="flex flex-col gap-2">
+              {isLoading ? (
+                <p className="text-xxs text-gray-400">Cargando...</p>
+              ) : scheduledMeetings.length > 0 ? (
+                scheduledMeetings.map(m => (
+                  <div key={m.id} className="bg-gray-50 rounded-2xl p-3 border border-gray-100 flex flex-col gap-1">
+                    <h5 className="text-xs font-bold text-gray-800">{m.titulo}</h5>
+                    <span className="text-xxs text-gray-400">
+                      {new Date(m.scheduled_at).toLocaleString()}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-gray-400 text-xxs font-semibold">No tienes reuniones programadas.</p>
+              )}
             </div>
           </div>
 

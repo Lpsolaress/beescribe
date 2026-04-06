@@ -1,8 +1,9 @@
-// src/pages/LoginPage.jsx
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { login } from '../auth/auth';
 import bannerImg from '../assets/login_banner.png';
+import { GoogleLogin } from '@react-oauth/google';
+import apiClient from '../api';
 
 const HexagonIcon = () => (
   <svg className="w-5 h-5 text-amber-500 fill-current" viewBox="0 0 24 24">
@@ -49,7 +50,28 @@ const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+
+  const handleGoogleSuccess = async (credentialResponse) => {
+    setIsLoading(true);
+    setError('');
+    try {
+      const response = await apiClient.post('/auth/google', {
+        credential: credentialResponse.credential
+      });
+      
+      if (response.data.access_token) {
+        localStorage.setItem('token', response.data.access_token);
+        navigate('/');
+      }
+    } catch (err) {
+      setError('Error al iniciar sesión con Google. ' + (err.response?.data?.detail || ''));
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
 
 
@@ -106,10 +128,7 @@ const LoginPage = () => {
             </div>
 
             <div>
-              <div className="flex justify-between items-center mb-1">
                 <label className="block text-gray-600 text-xs font-semibold">Contraseña</label>
-                <Link to="#" className="text-amber-500 text-xs font-semibold hover:underline">¿Olvidaste tu contraseña?</Link>
-              </div>
               <div className="relative">
                 <span className="absolute left-3 top-3">
                   <LockIcon />
@@ -134,7 +153,7 @@ const LoginPage = () => {
 
             {error && <p className="text-red-500 text-xs text-center">{error}</p>}
 
-            <button type="submit" className="w-full bg-amber-400 text-gray-900 py-2.5 rounded-lg font-bold text-sm shadow-sm hover:bg-amber-500 transition-colors mt-2">
+            <button type="submit" className="w-full bg-amber-400 text-gray-900 py-2.5 rounded-lg font-bold text-sm shadow-sm hover:bg-amber-500 transition-colors mt-2" disabled={isLoading}>
               Iniciar Sesión
             </button>
 
@@ -146,21 +165,16 @@ const LoginPage = () => {
             </div>
 
             {/* OAuth Buttons */}
-            <div className="space-y-2">
-              <button 
-                type="button" 
-                onClick={() => handleSocialClick('Google')} 
-                className="w-full flex items-center justify-center py-2.5 border border-gray-200 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-              >
-                <GoogleIcon /> Continuar con Google
-              </button>
-              <button 
-                type="button" 
-                onClick={() => handleSocialClick('Apple')} 
-                className="w-full flex items-center justify-center py-2.5 bg-black text-white rounded-lg text-sm font-semibold hover:bg-gray-900 transition-colors"
-              >
-                <AppleIcon /> Continuar con Apple ID
-              </button>
+            <div className="flex justify-center">
+              <GoogleLogin
+                onSuccess={handleGoogleSuccess}
+                onError={() => setError('Error en la autenticación de Google')}
+                theme="outline"
+                size="large"
+                width="100%"
+                text="continue_with"
+                shape="rectangular"
+              />
             </div>
 
             <p className="text-center text-xs text-gray-500 mt-4">
