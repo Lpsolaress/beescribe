@@ -144,4 +144,4 @@ El sistema utiliza una base de datos relacional (SQLite/PostgreSQL) con las sigu
 
 ---
 
-**Desarrollado con 🐝 por el equipo de Bee-Scribe.**
+**Desarrollado con 🐝 por Luis Pedro Solares Serrano -- lpsolaress@gmail.com**
