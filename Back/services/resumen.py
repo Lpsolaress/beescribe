@@ -115,7 +115,7 @@ PERSONA A: {resumen_corto}
         # --- PROMPT PARA REUNIONES (ENFOCADO EN ACCIONES) ---
         if tipo_audio == "reunion":
             return f"""
-            Actúa como un analista de negocios experto y secretario de reuniones. A partir de la siguiente transcripción, realiza:
+            Actúa como una analista de negocios experta y secretaria de reuniones. A partir de la siguiente transcripción, realiza:
             {variedad_instr}
 
             - **Tareas:** Tabla con columnas "Acción", "Responsable" y "Plazo".
@@ -147,7 +147,7 @@ PERSONA A: {resumen_corto}
         # --- PROMPT PARA PODCASTS (ENFOCADO EN CONTENIDO) ---
         elif tipo_audio == "podcast":
             return f"""
-            Actúa como un productor de contenido experto. A partir de la transcripción, realiza:
+            Actúa como una productora de contenido experta. A partir de la transcripción, realiza:
             {variedad_instr}
 
             ## Notas del Episodio
@@ -183,7 +183,7 @@ PERSONA A: {resumen_corto}
         # --- PROMPT PARA CONVERSACIONES (ENFOCADO EN PERSPECTIVAS) ---
         elif tipo_audio == "conversacion":
             return f"""
-            Actúa como un experto en comunicación. A partir de la transcripción, realiza:
+            Actúa como una experta en comunicación. A partir de la transcripción, realiza:
             {variedad_instr}
 
             ## Síntesis
@@ -219,7 +219,7 @@ PERSONA A: {resumen_corto}
         # --- NUEVOS PROMPTS DE TRANSFORMACIÓN (BREVE, DETALLADO, CUESTIONARIO, GUION) ---
         elif tipo_audio == "breve":
             return f"""
-            Actúa como un sintetizador experto. Realiza un resumen corto.
+            Actúa como una sintetizadora experta. Realiza un resumen corto.
             {variedad_instr}
 
             ## Resumen Ejecutivo
@@ -251,7 +251,7 @@ PERSONA A: {resumen_corto}
 
         elif tipo_audio == "detallado":
             return f"""
-            Actúa como un analista senior experto en documentación técnica y corporativa. Tu objetivo es crear un **INFORME EXHAUSTIVO Y MINUCIOSO**.
+            Actúa como una analista senior experta en documentación técnica y corporativa. Tu objetivo es crear un **INFORME EXHAUSTIVO Y MINUCIOSO**.
             {variedad_instr}
             
             ## Informe de Alta Densidad
@@ -288,7 +288,7 @@ PERSONA A: {resumen_corto}
 
         elif tipo_audio == "cuestionario":
             return f"""
-            Actúa como un instructor pedagógico experto. 
+            Actúa como una instructora pedagógica experta. 
             
             TRANSCRIPCIÓN DEL AUDIO:
             ---
@@ -332,7 +332,7 @@ PERSONA A: {resumen_corto}
 
         elif tipo_audio == "guion":
             return f"""
-            Actúa como un guionista profesional. Convierte la transcripción en un guion.
+            Actúa como una guionista profesional. Convierte la transcripción en un guion.
             {variedad_instr} Explora diferentes estilos narrativos o focos de la conversación en cada versión.
 
             ## Guion
@@ -363,7 +363,7 @@ PERSONA A: {resumen_corto}
         # --- PROMPT POR DEFECTO (GENÉRICO) ---
         else: # "audio_normal" o cualquier otro caso
             return f"""
-            Actúa como un asistente experto en síntesis.
+            Actúa como una asistente experta en síntesis.
             {variedad_instr}
 
             ## Resumen

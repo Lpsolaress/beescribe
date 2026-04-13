@@ -262,9 +262,13 @@ base_flag = os.getenv("USE_OPENAI_API", "False")
 use_openai_summary = os.getenv("USE_OPENAI_SUMMARY", base_flag).lower() == "true"
 use_openai_mindmap = os.getenv("USE_OPENAI_MINDMAP", base_flag).lower() == "true"
 
-api_key = os.getenv("OPENAI_API_KEY") if (use_openai_summary or use_openai_mindmap) else None
-if (use_openai_summary or use_openai_mindmap) and not api_key:
-    raise ValueError("OPENAI_API_KEY no encontrada (requerida cuando USE_OPENAI_SUMMARY o USE_OPENAI_MINDMAP es True)")
+# Cargar API Key si existe, necesaria para Resúmenes, Mapas, Chat y TTS
+api_key = os.getenv("OPENAI_API_KEY")
+
+if (use_openai_summary or use_openai_mindmap or base_flag.lower() == "true") and not api_key:
+    print("⚠️ ADVERTENCIA: Se requiere OPENAI_API_KEY para las funciones de IA.")
+
+
 
 transcriptor = AudioTranscriptor()
 generador_resumen = GeneradorResumenAvanzado(api_key)

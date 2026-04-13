@@ -9,7 +9,7 @@ import './AIChatPanel.css';
 const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, autoOpen, onOpened }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { role: 'ai', content: initialMessage || '¡Hola! 🐝 Soy Bee-Scribe AI. ¿En qué puedo ayudarte hoy?' }
+    { role: 'ai', content: initialMessage || '¡Hola! 🐝 Soy Ali-IA. ¿En qué puedo ayudarte hoy?' }
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -23,7 +23,7 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
   const messagesEndRef = useRef(null);
   const synthRef = useRef(window.speechSynthesis);
   const audioRef = useRef(null);
-  const [selectedVoice, setSelectedVoice] = useState(() => localStorage.getItem('bee_voice') || 'alloy');
+  const [selectedVoice, setSelectedVoice] = useState(() => localStorage.getItem('bee_voice') || 'shimmer');
   const [chatHistory, setChatHistory] = useState(() => {
     const saved = localStorage.getItem('bee_chat_history');
     return saved ? JSON.parse(saved) : [];
@@ -45,7 +45,7 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
       };
       setChatHistory(prev => [newHistoryEntry, ...prev].slice(0, 20));
     }
-    setMessages([{ role: 'ai', content: initialMessage || '¡Hola! 🐝 Soy Bee-Scribe AI. ¿En qué puedo ayudarte hoy?' }]);
+    setMessages([{ role: 'ai', content: initialMessage || '¡Hola! 🐝 Soy Ali-IA. ¿En qué puedo ayudarte hoy?' }]);
     setSelectedMeetingIds(meetingId ? [meetingId] : []);
     setHasWelcomed(false);
     setShowHistory(false);
@@ -97,8 +97,10 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
 
     if (selectedVoice === 'browser') {
       const utterance = new SpeechSynthesisUtterance(plainText);
+      
+      // Asegurarnos de que las voces estén cargadas
       const voices = synthRef.current.getVoices();
-      const spanishVoice = voices.find(v => v.lang.includes('es'));
+      const spanishVoice = voices.find(v => v.lang.includes('es')) || voices.find(v => v.lang.includes('en'));
       if (spanishVoice) utterance.voice = spanishVoice;
       
       utterance.onstart = () => setIsSpeaking(true);
@@ -110,24 +112,33 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
       try {
         setIsSpeaking(true);
         const response = await apiClient.post('/tts', { text: plainText, voice: selectedVoice }, { responseType: 'blob' });
+        
         const audioUrl = URL.createObjectURL(response.data);
         const audio = new Audio(audioUrl);
         audioRef.current = audio;
+        
         audio.onended = () => {
           setIsSpeaking(false);
           URL.revokeObjectURL(audioUrl);
+          audioRef.current = null;
         };
-        audio.onerror = () => {
+        
+        audio.onerror = (e) => {
+          console.error("Error en objeto Audio:", e);
           setIsSpeaking(false);
           URL.revokeObjectURL(audioUrl);
+          audioRef.current = null;
         };
-        audio.play();
+        
+        await audio.play().catch(err => {
+          console.warn("Autoplay bloqueado o error de audio:", err);
+          setIsSpeaking(false);
+        });
       } catch (err) {
         console.error("Error en OpenAI TTS, usando fallback de navegador:", err);
-        // Fallback al navegador si OpenAI falla (ej. por API key inválida)
         const utterance = new SpeechSynthesisUtterance(plainText);
         const voices = synthRef.current.getVoices();
-        const spanishVoice = voices.find(v => v.lang.includes('es'));
+        const spanishVoice = voices.find(v => v.lang.includes('es')) || voices[0];
         if (spanishVoice) utterance.voice = spanishVoice;
         
         utterance.onstart = () => setIsSpeaking(true);
@@ -139,24 +150,37 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
     }
   }, [isMuted, selectedVoice]);
 
+
   // Saludo inicial
   useEffect(() => {
     if (isOpen && !hasWelcomed && !isMuted) {
-      speak("¡Hola! Soy tu asistente de Bee-Scribe. ¿En qué puedo ayudarte con esta reunión?");
+      speak("¡Hola! Soy Ali, tu asistente IA. ¿En qué puedo ayudarte con esta reunión?");
       setHasWelcomed(true);
     }
   }, [isOpen, hasWelcomed, isMuted, speak]);
 
-  // Sincronizar estado de habla con el sintetizador del navegador
+  // Sincronizar estado de habla con el sintetizador del navegador o audio de OpenAI
   useEffect(() => {
     const checkSpeaking = setInterval(() => {
-      const isStillSpeaking = window.speechSynthesis.speaking;
-      if (isSpeaking !== isStillSpeaking) {
-        setIsSpeaking(isStillSpeaking);
+      // 1. Verificar si hay audio de OpenAI reproduciéndose
+      if (audioRef.current && !audioRef.current.paused) {
+        if (!isSpeaking) setIsSpeaking(true);
+        return;
+      }
+
+      // 2. Verificar si el navegador está hablando (fallback)
+      const isSynthSpeaking = window.speechSynthesis.speaking;
+      
+      // Solo actualizamos si no hay un audio de OpenAI activo (que ya manejamos arriba)
+      if (!audioRef.current || audioRef.current.paused) {
+        if (isSpeaking !== isSynthSpeaking) {
+          setIsSpeaking(isSynthSpeaking);
+        }
       }
     }, 100);
     return () => clearInterval(checkSpeaking);
   }, [isSpeaking]);
+
 
   // Guardar preferencia de mudo y voz
   useEffect(() => {
@@ -313,7 +337,7 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
               <img src="/LogoBeeScribe.png" alt="Logo" className="w-full h-full object-contain scale-125" />
             </div>
             <div>
-              <h3 className="font-bold text-sm text-gray-800">Asistente Bee-Scribe</h3>
+              <h3 className="font-bold text-sm text-gray-800">Ali-IA (Asistente)</h3>
               <p className="text-[10px] text-emerald-500 font-semibold uppercase tracking-wider">En línea</p>
             </div>
           </div>
@@ -467,17 +491,17 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
           )}
 
           {/* La abeja solo se muestra si el sonido está activo y NO estamos viendo el historial */}
-          {!isMuted && !showHistory && (
-            <div className={`bee-assistant-wrapper ${isSpeaking ? 'active' : ''}`}>
+          {!showHistory && (
+            <div className={`bee-assistant-wrapper ${(isSpeaking || isLoading) ? 'active' : ''}`}>
               <div className="bee-assistant-container">
                 <div className="bee-robot-wrapper">
                   <img 
-                    src={isSpeaking ? "/AbejaChatFinal.gif" : "/AbejaChat.jpg"} 
+                    src={(isSpeaking || isLoading) ? "/Abeja-hablando.gif" : "/Abeja-idle.gif"} 
                     alt="Bee Assistant" 
                     className="bee-robot-image" 
                   />
                 </div>
-                {isSpeaking && <div className="bee-speaking-vibrance"></div>}
+                {(isSpeaking || isLoading) && <div className="bee-speaking-vibrance"></div>}
               </div>
             </div>
           )}
@@ -490,7 +514,7 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
                 </div>
               </div>
               <span className="text-[9px] text-gray-300 mt-1 px-1">
-                {msg.role === 'user' ? 'Tú' : 'Bee-Scribe AI'}
+                {msg.role === 'user' ? 'Tú' : 'Ali-IA'}
               </span>
             </div>
           ))}
@@ -502,7 +526,7 @@ const AIChatPanel = ({ meetingId = null, initialMessage = "", preSelectedIds, au
                   <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
                   <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                 </div>
-                <span>Bee-Scribe está consultando su colmena...</span>
+                <span>Ali-IA está consultando su colmena...</span>
               </div>
             </div>
           )}
