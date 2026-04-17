@@ -10,10 +10,21 @@
 
 ### Backend
 Para configurar y ejecutar el backend localmente:
+
+**En Mac/Linux:**
 ```bash
 cd Back
 python3 -m venv venv
 source ./venv/bin/activate
+pip install -r requirements.txt
+uvicorn api.main:app --reload
+```
+
+**En Windows:**
+```bash
+cd Back
+python -m venv venv
+.\venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn api.main:app --reload
 ```
